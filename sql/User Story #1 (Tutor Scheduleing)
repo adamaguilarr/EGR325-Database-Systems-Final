@@ -1,0 +1,58 @@
+SET @TutorID = 8;
+
+-- Example of new availability slots (must not exceed 10 hours total)
+DROP TEMPORARY TABLE IF EXISTS TempNewSlots;
+CREATE TEMPORARY TABLE TempNewSlots (
+ DayOfWeek VARCHAR(10),
+ StartTime TIME,
+ EndTime TIME
+);
+
+-- Example: Tutor chooses 3 time slots (6 total hours)
+INSERT INTO TempNewSlots (DayOfWeek, StartTime, EndTime) VALUES
+ ('Monday', '09:00:00', '11:00:00'),
+ ('Wednesday', '13:00:00', '15:00:00'),
+ ('Friday', '10:00:00', '12:00:00');
+
+-- Total Hours Entered
+SELECT SUM(TIMESTAMPDIFF(HOUR, StartTime, EndTime)) INTO @NewHours
+FROM TempNewSlots;
+
+-- Check total available hours
+SELECT IFNULL(SUM(TIMESTAMPDIFF(HOUR, StartTime, EndTime)),0) INTO
+@ExistingHours
+FROM Availability
+WHERE TutorID = @TutorID AND IsAvailable = TRUE;
+SET @TotalHours := @ExistingHours + @NewHours;
+
+-- Hours Exceed Limit For The Week
+SELECT
+ CASE
+ WHEN @TotalHours > 10 THEN 'ERROR: Cannot exceed 10 available hours per week.'
+ ELSE 'OK'
+ END AS ValidationResult;
+
+-- Updates only if the Check is Passed
+START TRANSACTION;
+-- Remove old availability
+DELETE FROM Availability WHERE TutorID = @TutorID;
+-- Insert new availability (total ≤ 10 hours)
+INSERT INTO Availability (TutorID, DayOfWeek, StartTime, EndTime, IsAvailable)
+SELECT @TutorID, DayOfWeek, StartTime, EndTime, TRUE
+FROM TempNewSlots;
+COMMIT;
+
+-- Verify new schedule
+SELECT
+ a.TutorID,
+ CONCAT(t.FirstName, ' ', t.LastName) AS Tutor,
+ a.DayOfWeek,
+ a.StartTime,
+ a.EndTime,
+ TIMESTAMPDIFF(HOUR, a.StartTime, a.EndTime) AS SlotHours
+FROM Availability a
+JOIN Tutor t ON a.TutorID = t.TutorID
+WHERE a.TutorID = @TutorID
+ORDER BY FIELD(a.DayOfWeek,
+'Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'),
+ a.StartTime;
