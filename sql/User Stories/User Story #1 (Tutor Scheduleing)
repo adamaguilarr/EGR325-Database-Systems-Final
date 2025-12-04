@@ -1,3 +1,36 @@
+DELIMITER $$
+
+DROP TRIGGER IF EXISTS trg_availability_no_overlap $$
+
+CREATE TRIGGER trg_availability_no_overlap
+BEFORE INSERT ON Availability
+FOR EACH ROW
+BEGIN
+    DECLARE vOverlap INT;
+
+    IF NEW.StartTime >= NEW.EndTime THEN
+        SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'ERROR: StartTime must be before EndTime.';
+    END IF;
+
+    SELECT EXISTS (
+        SELECT 1
+        FROM Availability a
+        WHERE a.TutorID = NEW.TutorID
+          AND a.IsAvailable = TRUE
+          AND a.DayOfWeek = NEW.DayOfWeek
+          AND NEW.StartTime < a.EndTime
+          AND a.StartTime < NEW.EndTime
+    ) INTO vOverlap;
+
+    IF vOverlap = 1 THEN
+        SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'ERROR: New availability overlaps existing slot.';
+    END IF;
+END$$
+
+DELIMITER ;
+
 SET @TutorID := 8;
 SET @MaxHoursPerWeek := 10;
 
@@ -10,13 +43,13 @@ CREATE TEMPORARY TABLE TempNewSlots (
     EndTime   TIME
 );
 
--- Example new slots
+-- Example new slots (replace these with whatever UI/script sends)
 INSERT INTO TempNewSlots (DayOfWeek, StartTime, EndTime) VALUES
  ('Monday',    '09:00:00', '11:00:00'),
- ('Wednesday', '13:00:00', '15:00:00'),
+ ('Wednesday', '10:00:00', '12:00:00'),
  ('Friday',    '10:00:00', '12:00:00');
-
--- 2. CREATE REAL TABLE COPY FOR SELF-JOIN
+ 
+-- 2. CREATE REAL TABLE COPY FOR SELF-JOIN (NEW VS NEW OVERLAP)
 DROP TABLE IF EXISTS TempSlotsCopy;
 
 CREATE TABLE TempSlotsCopy AS
@@ -25,24 +58,16 @@ SELECT * FROM TempNewSlots;
 ALTER TABLE TempSlotsCopy
 ADD COLUMN SlotID INT AUTO_INCREMENT PRIMARY KEY;
 
--- 3. CALCULATE HOURS FOR NEW SLOTS
+-- 3. CALCULATE HOURS FOR NEW SLOTS (ONLY NEW, NO EXISTING)
 SELECT
     IFNULL(SUM(TIMESTAMPDIFF(MINUTE, StartTime, EndTime)) / 60.0, 0)
 INTO @NewHours
 FROM TempNewSlots;
 
--- 4. CALCULATE EXISTING HOURS
-SELECT
-    IFNULL(SUM(TIMESTAMPDIFF(MINUTE, StartTime, EndTime)) / 60.0, 0)
-INTO @ExistingHours
-FROM Availability
-WHERE TutorID = @TutorID
-  AND IsAvailable = TRUE;
+-- 4. TOTAL HOURS AFTER UPDATE (REPLACE MODE: ONLY NEW HOURS MATTER)
+SET @TotalHours := @NewHours;
 
--- 5. TOTAL HOURS AFTER UPDATE
-SET @TotalHours := @NewHours + @ExistingHours;
-
--- 6. OVERLAP CHECK: NEW SLOTS AMONG THEMSELVES
+-- 5. OVERLAP CHECK: NEW SLOTS AMONG THEMSELVES
 SELECT EXISTS (
     SELECT 1
     FROM TempSlotsCopy A
@@ -53,33 +78,20 @@ SELECT EXISTS (
      AND A.SlotID < B.SlotID
 ) INTO @OverlapNew;
 
--- 7. OVERLAP CHECK: NEW SLOTS VS EXISTING AVAILABILITY
-SELECT EXISTS (
-    SELECT 1
-    FROM TempNewSlots n
-    JOIN Availability a
-      ON a.TutorID = @TutorID
-     AND a.IsAvailable = TRUE
-     AND n.DayOfWeek = a.DayOfWeek
-     AND n.StartTime < a.EndTime
-     AND a.StartTime < n.EndTime
-) INTO @OverlapExisting;
-
--- 8. VALIDATION LOGIC
+-- 6. VALIDATION LOGIC (NO CHECK VS EXISTING, BECAUSE WE REPLACE)
 SET @IsValid := (
     CASE
         WHEN @TotalHours <= @MaxHoursPerWeek
          AND @OverlapNew = 0
-         AND @OverlapExisting = 0
         THEN 1
         ELSE 0
     END
 );
 
--- 9. CONDITIONAL UPDATE (ATOMIC)
+-- 7. CONDITIONAL UPDATE: FULL REPLACE FOR THIS TUTOR
 START TRANSACTION;
 
--- Delete existing availability only if valid
+-- Delete ALL existing availability for this tutor if valid
 DELETE FROM Availability
 WHERE TutorID = @TutorID
   AND @IsValid = 1;
@@ -92,23 +104,21 @@ WHERE @IsValid = 1;
 
 COMMIT;
 
--- 10. STATUS MESSAGE
+-- 8. STATUS MESSAGE
 SELECT
     CASE
         WHEN @IsValid = 1 THEN
-            'SUCCESS: Availability updated.'
+            'SUCCESS: Availability updated (old schedule fully replaced).'
         WHEN @OverlapNew = 1 THEN
             'ERROR: New time slots overlap each other.'
-        WHEN @OverlapExisting = 1 THEN
-            'ERROR: New time slots overlap existing availability.'
         WHEN @TotalHours > @MaxHoursPerWeek THEN
-            CONCAT('ERROR: Total hours (', @TotalHours,
+            CONCAT('ERROR: Total hours for new schedule (', @TotalHours,
                    ') exceed limit of ', @MaxHoursPerWeek, '.')
         ELSE
             'ERROR: Unknown validation failure.'
     END AS Message;
 
--- 11. SHOW UPDATED SCHEDULE (ONLY IF VALID)
+-- 9. SHOW UPDATED SCHEDULE (ONLY IF VALID)
 SELECT
     a.TutorID,
     CONCAT(t.FirstName, ' ', t.LastName) AS Tutor,
@@ -124,5 +134,7 @@ ORDER BY FIELD(a.DayOfWeek,
     'Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'),
     a.StartTime;
 
--- 12. CLEANUP
+-- 10. CLEANUP
 DROP TABLE TempSlotsCopy;
+
+SELECT * FROM Availability WHERE TutorID = 8;
