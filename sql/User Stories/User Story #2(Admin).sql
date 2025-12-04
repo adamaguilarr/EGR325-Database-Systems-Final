@@ -53,13 +53,8 @@ SELECT
 INTO @NewHours
 FROM TempNewSlots;
 
--- 6. CALCULATE EXISTING HOURS FOR THIS TUTOR (SHOULD BE 0 FOR NEW TUTOR, BUT KEPT FOR CONSISTENCY)
-SELECT
-    IFNULL(SUM(TIMESTAMPDIFF(MINUTE, StartTime, EndTime)) / 60.0, 0)
-INTO @ExistingHours
-FROM Availability
-WHERE TutorID = @TutorID
-  AND IsAvailable = TRUE;
+-- 6. CALCULATE EXISTING HOURS USING REUSABLE FUNCTION
+SET @ExistingHours := fn_TutorWeeklyHours(@TutorID);
 
 -- 7. TOTAL HOURS AFTER ADDING NEW SLOTS
 SET @TotalHours := @NewHours + @ExistingHours;
