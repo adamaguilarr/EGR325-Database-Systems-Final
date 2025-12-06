@@ -6,20 +6,76 @@
 --       preventing overlapping availability slots.
 -- =====================================================================
 
+-- Live Demo stuff for User Story #2
+
+USE CBU_TutoringCenter;
+
+-- Reset demo tutor so this script can be run multiple times
+SET @DemoEmail := 'sarah.ramirez.demo@calbaptist.edu';
+
+-- Look up the tutor ID for this demo tutor (if they exist)
+SET @DemoTutorID := (
+    SELECT TutorID
+    FROM Tutor
+    WHERE Binary Email = @DemoEmail
+);
+
+-- If @DemoTutorID is NULL, these deletes do nothing. If not, they clean up.
+DELETE FROM Availability
+WHERE TutorID = @DemoTutorID;
+
+DELETE FROM TutorSubject
+WHERE TutorID = @DemoTutorID;
+
+DELETE FROM Tutor
+WHERE TutorID = @DemoTutorID;
+
+-- Actual script starts here
 SET @MaxHoursPerWeek := 10;
 
 -- 1. INSERT NEW TUTOR PROFILE
 INSERT INTO Tutor (FirstName, LastName, Department, Email, Rating)
-VALUES ('Sarah', 'Ramirez', 'Mathematics', 'sarah.ramirez@calbaptist.edu', 0.00);
+VALUES ('Sarah', 'Ramirez', 'Mathematics', 'sarah.ramirez.demo@calbaptist.edu', 0.00);
 
 SET @TutorID := LAST_INSERT_ID();
 
 -- 2. ASSIGN SUBJECTS TO TUTOR (example: Algebra = 1, Calculus = 2)
+-- 2. ENSURE SUBJECTS EXIST AND ASSIGN THEM TO THE NEW TUTOR
+
+-- Make sure Algebra exists
+INSERT INTO Subject (SubjectName, Department)
+SELECT 'Algebra', 'Mathematics'
+WHERE NOT EXISTS (
+    SELECT 1 FROM Subject WHERE SubjectName = 'Algebra'
+);
+
+-- Make sure Calculus exists
+INSERT INTO Subject (SubjectName, Department)
+SELECT 'Calculus', 'Mathematics'
+WHERE NOT EXISTS (
+    SELECT 1 FROM Subject WHERE SubjectName = 'Calculus'
+);
+
+-- Look up their IDs
+SET @AlgebraID := (
+    SELECT SubjectID
+    FROM Subject
+    WHERE SubjectName = 'Algebra'
+    LIMIT 1
+);
+
+SET @CalculusID := (
+    SELECT SubjectID
+    FROM Subject
+    WHERE SubjectName = 'Calculus'
+    LIMIT 1
+);
+
+-- Assign both subjects to the new tutor
 INSERT INTO TutorSubject (TutorID, SubjectID)
 VALUES
-    (@TutorID, 1),  -- Algebra
-    (@TutorID, 2);  -- Calculus
-
+    (@TutorID, @AlgebraID),
+    (@TutorID, @CalculusID);
 
 -- 3. DEFINE INITIAL AVAILABILITY SLOTS IN TEMP TABLE
 DROP TEMPORARY TABLE IF EXISTS TempNewSlots;
